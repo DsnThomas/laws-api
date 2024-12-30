@@ -1,31 +1,31 @@
 const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const sqlite3 = require('sqlite3').verbose();
+const Database = require('better-sqlite3');
 const cors = require('cors');
 const { TextDecoder } = require('util');
 
 const app = express();
 app.use(cors());
 
-const db = new sqlite3.Database('./laws.db');
+const db = new Database('./laws.db');
 
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS laws (
+// Cria a tabela se não existir
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS laws (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     law_type TEXT,
     content TEXT,
     last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
-  )`);
-});
+  )
+`).run();
 
-
+// Função para buscar e processar dados
 async function fetchAndParseData(url) {
   try {
     const proxyUrl = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url);
     const { data } = await axios.get(proxyUrl, { responseType: 'arraybuffer' });
 
-  
     const decoder = new TextDecoder('windows-1252');
     const decodedText = decoder.decode(new Uint8Array(data));
 
@@ -36,15 +36,14 @@ async function fetchAndParseData(url) {
   }
 }
 
-// Processa e limpa o html
+// Processa e limpa o HTML
 function parseHTML(html) {
   const $ = cheerio.load(html);
 
-  // Trata o html removendo os links e styles
-  $('img').remove(); 
-  $('a').removeAttr('href'); 
+  // Remove links e estilos
+  $('img').remove();
+  $('a').removeAttr('href');
   $('link[rel="stylesheet"]').each((_, element) => {
-    // Mantem o css
     const href = $(element).attr('href');
     if (href && href.startsWith('/')) {
       $(element).attr('href', 'https://www.planalto.gov.br' + href);
@@ -54,34 +53,38 @@ function parseHTML(html) {
   return $.html();
 }
 
-// Salva o html no BD
+// Salva ou atualiza o conteúdo no banco de dados
 async function updateLaw(lawType, url) {
   const content = await fetchAndParseData(url);
   if (content) {
-    db.run(`INSERT INTO laws (law_type, content) VALUES (?, ?)`, [lawType, content], function (err) {
-      if (err) {
-        return console.error(err.message);
-      }
-      console.log(`Lei ${lawType} atualizada no banco de dados.`);
-    });
+    db.prepare(`
+      INSERT INTO laws (law_type, content) 
+      VALUES (?, ?)
+    `).run(lawType, content);
+
+    console.log(`Lei ${lawType} atualizada no banco de dados.`);
   }
 }
 
-
+// Endpoint para obter conteúdo de leis
 app.get('/laws/:lawType', (req, res) => {
   const lawType = req.params.lawType;
-  db.get(`SELECT content FROM laws WHERE law_type = ? ORDER BY last_updated DESC LIMIT 1`, [lawType], (err, row) => {
-    if (err) {
-      return res.status(500).json({ error: 'Erro ao buscar dados' });
-    }
-    if (row) {
-      res.json({ html: row.content });
-    } else {
-      res.status(404).json({ error: 'Lei não encontrada' });
-    }
-  });
+
+  const row = db.prepare(`
+    SELECT content FROM laws 
+    WHERE law_type = ? 
+    ORDER BY last_updated DESC 
+    LIMIT 1
+  `).get(lawType);
+
+  if (row) {
+    res.json({ html: row.content });
+  } else {
+    res.status(404).json({ error: 'Lei não encontrada' });
+  }
 });
 
+// Leis a serem atualizadas periodicamente
 const lawsToUpdate = [
   { type: 'codigo-civil', url: 'https://www.planalto.gov.br/ccivil_03/Leis/2002/L10406compilada.htm' },
   { type: 'processo-civil', url: 'https://www.planalto.gov.br/ccivil_03/decreto-lei/1937-1946/del1608.htm' },
@@ -94,9 +97,9 @@ const lawsToUpdate = [
   { type: 'defesa-consumidor', url: 'https://www.planalto.gov.br/ccivil_03/leis/l8078compilado.htm' },
   { type: 'advocacia', url: 'https://www.planalto.gov.br/ccivil_03/leis/l8906.htm' },
   { type: 'estatuto-deficiencia', url: 'https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2015/lei/l13146.htm' },
-
 ];
 
+// Agendar atualizações periódicas
 function scheduleLawUpdates() {
   lawsToUpdate.forEach(law => {
     updateLaw(law.type, law.url);
@@ -105,10 +108,10 @@ function scheduleLawUpdates() {
 
 scheduleLawUpdates();
 
-// Atualiza cada 24h
-setInterval(scheduleLawUpdates, 24 * 60 * 60 * 1000); 
+// Atualiza a cada 24 horas
+setInterval(scheduleLawUpdates, 24 * 60 * 60 * 1000);
 
-
+// Inicializa o servidor
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
