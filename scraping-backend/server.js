@@ -4,6 +4,7 @@ const cheerio = require('cheerio');
 const Database = require('better-sqlite3');
 const cors = require('cors');
 const { TextDecoder } = require('util');
+const he = require('he'); // Adicionado para decodificar HTML
 
 const app = express();
 app.use(cors());
@@ -78,7 +79,9 @@ app.get('/laws/:lawType', (req, res) => {
   `).get(lawType);
 
   if (row) {
-    res.json({ html: row.content });
+    // Decodifica os caracteres HTML escapados antes de enviar
+    const decodedHtml = he.decode(row.content);
+    res.send(decodedHtml); // Envia o HTML decodificado
   } else {
     res.status(404).json({ error: 'Lei não encontrada' });
   }
